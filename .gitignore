@@ -1,0 +1,13 @@
+__pycache__/
+.venv/
+*.pyc
+.terraform/
+*.tfstate*
+tfplan
+terraform.tfvars
+.coverage
+coverage.xml
+trivy-image.*
+zap-out/
+.venv/
+sbom.spdx.json

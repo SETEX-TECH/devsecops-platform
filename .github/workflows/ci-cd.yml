@@ -1,0 +1,184 @@
+name: CI-CD DevSecOps (VM)
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore: ["k8s/**", "**.md"]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: localhost:5000
+  IMAGE_NAME: devsecops-app
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  secrets-scan:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Gitleaks
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo" \
+            zricethezav/gitleaks:latest detect --source /repo --redact --verbose --exit-code 1
+
+  sast:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src" -w /src \
+            semgrep/semgrep semgrep scan --config p/default --config p/owasp-top-ten --error --metrics=off
+
+  test:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests et couverture
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install -q -r requirements-dev.txt
+          pytest --cov=app --cov-report=xml --cov-fail-under=70
+
+  sca:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy (dépendances)
+        run: trivy fs --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 .
+
+  iac-scan:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkov (Kubernetes)
+        # --soft-fail : les constats sont affichés sans bloquer. Retirez-le quand vous
+        # avez corrigé ou justifié chaque constat (--skip-check CKV_K8S_xx).
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src:ro" \
+            bridgecrew/checkov -d /src/k8s --framework kubernetes --quiet --soft-fail
+
+  build-scan-push:
+    needs: [secrets-scan, sast, test, sca, iac-scan]
+    runs-on: self-hosted
+    outputs:
+      risk_score: ${{ steps.gate.outputs.score }}
+      decision: ${{ steps.gate.outputs.decision }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build -t $REGISTRY/$IMAGE_NAME:$IMAGE_TAG .
+
+      - name: Trivy image (rapport JSON)
+        run: |
+          trivy image --format json --output trivy-image.json \
+            --severity CRITICAL,HIGH,MEDIUM,LOW $REGISTRY/$IMAGE_NAME:$IMAGE_TAG
+
+      - name: Porte de risque (score)
+        id: gate
+        run: python3 scripts/risk_gate.py trivy-image.json
+
+      - name: SBOM (SPDX)
+        run: trivy image --format spdx-json --output sbom.spdx.json $REGISTRY/$IMAGE_NAME:$IMAGE_TAG
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-securite
+          path: |
+            trivy-image.json
+            sbom.spdx.json
+
+      - name: Push vers le registre local
+        if: github.event_name == 'push'
+        run: docker push $REGISTRY/$IMAGE_NAME:$IMAGE_TAG
+
+  gitops-dev:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: build-scan-push
+    runs-on: self-hosted
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/set_image_tag.sh dev "$IMAGE_TAG"
+      - name: Commit
+        run: |
+          git config user.name "devsecops-bot"; git config user.email "bot@users.noreply.github.com"
+          git commit -am "deploy(dev): ${IMAGE_TAG::7} [skip ci]"
+          git pull --rebase && git push
+
+  gitops-staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-scan-push
+    runs-on: self-hosted
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/set_image_tag.sh staging "$IMAGE_TAG"
+      - name: Commit
+        run: |
+          git config user.name "devsecops-bot"; git config user.email "bot@users.noreply.github.com"
+          git commit -am "deploy(staging): ${IMAGE_TAG::7} [skip ci]"
+          git pull --rebase && git push
+
+  dast:
+    needs: gitops-staging
+    runs-on: self-hosted
+    steps:
+      - name: Attente du déploiement staging (port 30081)
+        run: |
+          for i in $(seq 1 40); do
+            curl -fsS http://localhost:30081/health && exit 0
+            sleep 10
+          done
+          echo "Staging indisponible"; exit 1
+      - name: OWASP ZAP baseline
+        run: |
+          mkdir -p zap-out && chmod 777 zap-out
+          docker run --rm --network host -v "$PWD/zap-out:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t http://localhost:30081 -r zap-report.html
+      - name: Rendre les fichiers au runner
+        if: always()
+        run: docker run --rm -v "$PWD/zap-out:/w" alpine chown -R "$(id -u):$(id -g)" /w
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: rapport-zap, path: zap-out/zap-report.html }
+
+  promote-prod:
+    needs: [dast, build-scan-push]
+    if: needs.build-scan-push.outputs.decision != 'block'
+    runs-on: self-hosted
+    environment: production      # configurer des « required reviewers » dans GitHub
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/set_image_tag.sh prod "$IMAGE_TAG"
+      - name: Commit
+        run: |
+          git config user.name "devsecops-bot"; git config user.email "bot@users.noreply.github.com"
+          git commit -am "deploy(prod): ${IMAGE_TAG::7} [skip ci]"
+          git pull --rebase && git push
+
+  notify-platform:
+    if: always() && github.event_name == 'push'
+    needs: [build-scan-push, dast]
+    runs-on: self-hosted
+    steps:
+      - name: Envoi du résultat à l'API de la plateforme
+        run: |
+          [ -z "${{ vars.PLATFORM_API_URL }}" ] && exit 0
+          curl -fsS -X POST "${{ vars.PLATFORM_API_URL }}/webhooks/pipeline" \
+            -H "Authorization: Bearer ${{ secrets.PLATFORM_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"repo":"${{ github.repository }}","commit":"${{ github.sha }}","branch":"${{ github.ref_name }}","risk_score":"${{ needs.build-scan-push.outputs.risk_score }}","decision":"${{ needs.build-scan-push.outputs.decision }}","build":"${{ needs.build-scan-push.result }}","dast":"${{ needs.dast.result }}"}' || true

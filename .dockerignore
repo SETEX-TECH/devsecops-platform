@@ -1,0 +1,7 @@
+.git
+.github
+terraform
+k8s
+argocd
+tests
+*.md
