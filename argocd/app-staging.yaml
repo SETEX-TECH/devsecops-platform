@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/<ORGANISATION>/<DEPOT>.git   # <-- à adapter
+    repoURL: https://github.com/SETEX-TECH/devsecops-platform.git   # <-- à adapter
     targetRevision: main
     path: k8s/overlays/staging
   destination:
