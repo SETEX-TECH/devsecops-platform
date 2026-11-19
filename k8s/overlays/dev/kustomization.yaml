@@ -7,7 +7,7 @@ resources:
 images:
   - name: app
     newName: localhost:5000/devsecops-app
-    newTag: "initial"
+    newTag: "c8e66eb9b6dbd79cae16adf014ca971d17b15eb0"
 replicas:
   - name: app
     count: 1
