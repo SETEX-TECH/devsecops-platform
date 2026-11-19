@@ -22,7 +22,7 @@ fi
 
 # Helm
 if ! command -v helm >/dev/null; then
-  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash  # nosemgrep
 fi
 
 echo

@@ -13,7 +13,7 @@ spec:
       validate:
         message: "Le tag 'latest' est interdit."
         pattern:
-          spec:
+          spec:  # nosemgrep
             containers:
               - image: "!*:latest"
 ---

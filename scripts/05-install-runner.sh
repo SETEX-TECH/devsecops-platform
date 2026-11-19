@@ -18,7 +18,7 @@ sudo -u runner bash -c "
   ./config.sh --unattended --url '${REPO_URL}' --token '${RUNNER_TOKEN}' \
     --name vm-runner --labels self-hosted,linux --replace
 "
-cd /home/runner/actions-runner
-sudo ./svc.sh install runner
-sudo ./svc.sh start
+
+sudo bash -c "cd /home/runner/actions-runner && ./svc.sh install runner"
+sudo bash -c "cd /home/runner/actions-runner && ./svc.sh start"
 echo "Runner installé. Vérifiez qu'il apparaît « Idle » dans GitHub."

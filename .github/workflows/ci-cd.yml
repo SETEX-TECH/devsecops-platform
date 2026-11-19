@@ -23,7 +23,7 @@ jobs:
   secrets-scan:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { fetch-depth: 0 }
       - name: Gitleaks
         run: |
@@ -33,7 +33,7 @@ jobs:
   sast:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Semgrep
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src" -w /src \
@@ -42,7 +42,7 @@ jobs:
   test:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Tests et couverture
         run: |
           python3 -m venv .venv
@@ -53,14 +53,14 @@ jobs:
   sca:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Trivy (dépendances)
         run: trivy fs --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 .
 
   iac-scan:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Checkov (Kubernetes)
         # --soft-fail : les constats sont affichés sans bloquer. Retirez-le quand vous
         # avez corrigé ou justifié chaque constat (--skip-check CKV_K8S_xx).
@@ -75,7 +75,7 @@ jobs:
       risk_score: ${{ steps.gate.outputs.score }}
       decision: ${{ steps.gate.outputs.decision }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build
         run: docker build -t $REGISTRY/$IMAGE_NAME:$IMAGE_TAG .
@@ -92,7 +92,7 @@ jobs:
       - name: SBOM (SPDX)
         run: trivy image --format spdx-json --output sbom.spdx.json $REGISTRY/$IMAGE_NAME:$IMAGE_TAG
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: rapports-securite
@@ -110,7 +110,7 @@ jobs:
     runs-on: self-hosted
     permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: scripts/set_image_tag.sh dev "$IMAGE_TAG"
       - name: Commit
         run: |
@@ -124,7 +124,7 @@ jobs:
     runs-on: self-hosted
     permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: scripts/set_image_tag.sh staging "$IMAGE_TAG"
       - name: Commit
         run: |
@@ -151,7 +151,7 @@ jobs:
       - name: Rendre les fichiers au runner
         if: always()
         run: docker run --rm -v "$PWD/zap-out:/w" alpine chown -R "$(id -u):$(id -g)" /w
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with: { name: rapport-zap, path: zap-out/zap-report.html }
 
@@ -162,7 +162,7 @@ jobs:
     environment: production      # configurer des « required reviewers » dans GitHub
     permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: scripts/set_image_tag.sh prod "$IMAGE_TAG"
       - name: Commit
         run: |
@@ -176,9 +176,22 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Envoi du résultat à l'API de la plateforme
+        env:
+          API_URL: ${{ vars.PLATFORM_API_URL }}
+          API_TOKEN: ${{ secrets.PLATFORM_API_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+          RISK: ${{ needs.build-scan-push.outputs.risk_score }}
+          DECISION: ${{ needs.build-scan-push.outputs.decision }}
+          BUILD: ${{ needs.build-scan-push.result }}
+          DAST: ${{ needs.dast.result }}
         run: |
-          [ -z "${{ vars.PLATFORM_API_URL }}" ] && exit 0
-          curl -fsS -X POST "${{ vars.PLATFORM_API_URL }}/webhooks/pipeline" \
-            -H "Authorization: Bearer ${{ secrets.PLATFORM_API_TOKEN }}" \
+          [ -z "$API_URL" ] && exit 0
+          PAYLOAD=$(jq -n --arg repo "$REPO" --arg commit "$COMMIT" --arg branch "$BRANCH" \
+            --arg risk "$RISK" --arg decision "$DECISION" --arg build "$BUILD" --arg dast "$DAST" \
+            '{repo:$repo,commit:$commit,branch:$branch,risk_score:$risk,decision:$decision,build:$build,dast:$dast}')
+          curl -fsS -X POST "$API_URL/webhooks/pipeline" \
+            -H "Authorization: Bearer $API_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"repo":"${{ github.repository }}","commit":"${{ github.sha }}","branch":"${{ github.ref_name }}","risk_score":"${{ needs.build-scan-push.outputs.risk_score }}","decision":"${{ needs.build-scan-push.outputs.decision }}","build":"${{ needs.build-scan-push.result }}","dast":"${{ needs.dast.result }}"}' || true
+            -d "$PAYLOAD" || true
