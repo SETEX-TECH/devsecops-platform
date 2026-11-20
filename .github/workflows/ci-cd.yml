@@ -145,9 +145,9 @@ jobs:
           echo "Staging indisponible"; exit 1
       - name: OWASP ZAP baseline
         run: |
-          mkdir -p zap-out && chmod 777 zap-out
+          mkdir -p zap-out && chmod 777 zap-out && cp .zap/rules.tsv zap-out/ && cp .zap/rules.tsv zap-out/
           docker run --rm --network host -v "$PWD/zap-out:/zap/wrk:rw" \
-            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t http://localhost:30081 -r zap-report.html
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -c rules.tsv -t http://localhost:30081 -r zap-report.html
       - name: Rendre les fichiers au runner
         if: always()
         run: docker run --rm -v "$PWD/zap-out:/w" alpine chown -R "$(id -u):$(id -g)" /w
