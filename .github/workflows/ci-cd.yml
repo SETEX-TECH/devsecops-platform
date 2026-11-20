@@ -139,7 +139,7 @@ jobs:
       - name: Attente du déploiement staging (port 30081)
         run: |
           for i in $(seq 1 40); do
-            curl -fsS http://localhost:30081/health && exit 0
+            curl -fsS -D - -o /dev/null http://localhost:30081/health | grep -qi '^x-content-type-options' && exit 0
             sleep 10
           done
           echo "Staging indisponible"; exit 1
